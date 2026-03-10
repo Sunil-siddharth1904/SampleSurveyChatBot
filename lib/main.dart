@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+//import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -39,7 +40,7 @@ class _VoiceHomeState extends State<VoiceHome> {
   File? _logFile;
 
   // Survey State
-  final List<Map<String, String>> _questions = [
+  final List<Map<String, String>> _initialQuestions = [
     {'key': 'name', 'question': 'What is your name?'},
     {'key': 'fatherName', 'question': 'What is your Father name?'},
     {'key': 'owned', 'question': 'How much land you own?'},
@@ -48,10 +49,16 @@ class _VoiceHomeState extends State<VoiceHome> {
     {'key': 'parcel', 'question': 'How much parcels do you have?'},
   ];
 
-  // TO DO
-  // Find out total land for farming. Total = owned + leasedIn - leasedOut
-  // Get the each parcel area by iterating through the no. of parcels
-  // Get the kharif, Rabi & Zaid crops & its area by iterating through the no. of parcels
+  List<Map<String, String>> _questions = [];
+
+  // Individual variables for each answer
+  String name = "";
+  String fatherName = "";
+  String owned = "";
+  String leasedIn = "";
+  String leasedOut = "";
+  String totalLand = "";
+  String parcel = "";
 
   int _currentQuestionIndex = 0;
   final Map<String, String> _answers = {};
@@ -125,7 +132,7 @@ class _VoiceHomeState extends State<VoiceHome> {
       _log('Error during speech initialization: $e');
     }
 
-    await tts.speak("Press start survey to begin.");
+    await tts.speak("Welcome to Sample Survey voicebot. Press start survey to begin.");
 
     // Start a 30-second timer to close the app if Start Survey is not clicked
     _initialActionTimer?.cancel();
@@ -151,6 +158,7 @@ class _VoiceHomeState extends State<VoiceHome> {
       });
     }
     
+    _questions = List.from(_initialQuestions);
     _currentQuestionIndex = 0;
     _answers.clear();
     _inputAttempts = 0;
@@ -174,24 +182,34 @@ class _VoiceHomeState extends State<VoiceHome> {
     }
     await tts.speak(question);
     // Add a short delay to prevent the app from listening to its own voice
-    await Future.delayed(const Duration(seconds: 1));
+    await Future.delayed(const Duration(milliseconds: 500));
     
     _inputTimer?.cancel();
-    _inputTimer = Timer(const Duration(seconds: 10), _handleNoInput);
+    // Use a longer timer for the input itself to allow for speech recognition processing
+    _inputTimer = Timer(const Duration(seconds: 15), _handleNoInput);
 
     try {
       _log('Listening started...');
       speech.listen(
         onResult: (result) {
           _log('onResult: recognizedWords: ${result.recognizedWords}, final: ${result.finalResult}');
+          
+          if (mounted) {
+            setState(() {
+              userText = result.recognizedWords;
+            });
+          }
+
           if (result.finalResult && result.recognizedWords.trim().isNotEmpty) {
             _inputTimer?.cancel();
             _processAnswer(result.recognizedWords);
           }
         },
-        listenFor: const Duration(seconds: 10),
-        pauseFor: const Duration(seconds: 10),
-        partialResults: false,
+        listenFor: const Duration(seconds: 30),
+        pauseFor: const Duration(seconds: 10), // Shorter pause for faster recognition of single digits
+        listenOptions: SpeechListenOptions(
+          partialResults: true, // Use SpeechListenOptions instead of deprecated parameter
+        ),
       );
     } catch (e) {
       _log('Error starting to listen: $e');
@@ -199,19 +217,81 @@ class _VoiceHomeState extends State<VoiceHome> {
     }
   }
 
-  void _processAnswer(String answer) {
+  void _processAnswer(String answer) async {
     final questionKey = _questions[_currentQuestionIndex]['key']!;
     _log('Processing answer for $questionKey: $answer');
 
     // Check if the question expects a numeric answer
     final numericKeys = ['owned', 'leasedIn', 'leasedOut', 'parcel'];
+    bool isNumericQuestion = numericKeys.contains(questionKey) || questionKey.contains('area');
+    
     String finalAnswer = answer;
-    if (numericKeys.contains(questionKey)) {
+    if (isNumericQuestion) {
       finalAnswer = _parseNumber(answer);
+      // RETRY LOGIC: If we expected a number but got text that couldn't be parsed
+      if (double.tryParse(finalAnswer) == null) {
+        _log('Invalid numeric input: $answer');
+        _inputAttempts++;
+        if (_inputAttempts < 3) {
+          await tts.speak("I didn't hear a number. Please say it again, like five or point five.");
+          await Future.delayed(const Duration(seconds: 4), _askQuestion);
+          return;
+        } else {
+          _log('Max numeric retries reached. Closing survey.');
+          await tts.speak("I'm having trouble understanding the numbers. Closing the survey.");
+          await Future.delayed(const Duration(seconds: 4), () => SystemNavigator.pop());
+          return;
+        }
+      }
       _log('Parsed numeric answer: $finalAnswer');
     }
 
     _answers[questionKey] = finalAnswer;
+
+    // Save to individual variables
+    switch (questionKey) {
+      case 'name':
+        name = finalAnswer;
+        break;
+      case 'fatherName':
+        fatherName = finalAnswer;
+        break;
+      case 'owned':
+        owned = finalAnswer;
+        break;
+      case 'leasedIn':
+        leasedIn = finalAnswer;
+        break;
+      case 'leasedOut':
+        leasedOut = finalAnswer;
+        break;
+      case 'parcel':
+        parcel = finalAnswer;
+        // Dynamically add parcel questions
+        int parcelCount = int.tryParse(finalAnswer) ?? 0;
+        for (int i = 1; i <= parcelCount; i++) {
+          _questions.add({'key': 'parcel_${i}_area', 'question': 'What is the area of parcel $i?'});
+          _questions.add({'key': 'parcel_${i}_kharif', 'question': 'What kharif crop is grown in parcel $i?'});
+          _questions.add({'key': 'parcel_${i}_rabi', 'question': 'What rabi crop is grown in parcel $i?'});
+          _questions.add({'key': 'parcel_${i}_zaid', 'question': 'What zaid crop is grown in parcel $i?'});
+        }
+        break;
+    }
+
+    // Safely calculate totalLand
+    double o = double.tryParse(owned) ?? 0.0;
+    double li = double.tryParse(leasedIn) ?? 0.0;
+    double lo = double.tryParse(leasedOut) ?? 0.0;
+    totalLand = (o + li - lo).toString();
+
+    // Print variables separately as requested
+    _log('Variable Updated: name = $name');
+    _log('Variable Updated: fatherName = $fatherName');
+    _log('Variable Updated: owned = $owned');
+    _log('Variable Updated: leasedIn = $leasedIn');
+    _log('Variable Updated: leasedOut = $leasedOut');
+    _log('Variable Updated: totalLand = $totalLand');
+    _log('Variable Updated: parcel = $parcel');
 
     if (mounted) {
       setState(() {
@@ -227,10 +307,13 @@ class _VoiceHomeState extends State<VoiceHome> {
   }
 
   String _parseNumber(String text) {
-      // try direct parsing first
-      if (int.tryParse(text) != null) {
-          return text;
+      // 1. Try parsing directly if the STT returned digits (e.g., "5" or "5.5")
+      String cleaned = text.trim().replaceAll(RegExp(r'[^0-9.]'), '');
+      if (cleaned.isNotEmpty && num.tryParse(cleaned) != null) {
+          return cleaned;
       }
+
+      // 2. Fallback to word-to-number parsing
       final textLower = text.toLowerCase().replaceAll('-', ' ').replaceAll(' and ', ' ').trim();
       const numberWords = {
         'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
@@ -244,31 +327,33 @@ class _VoiceHomeState extends State<VoiceHome> {
       List<String> words = textLower.split(' ');
       num finalResult = 0;
       num currentResult = 0;
+      bool foundWord = false;
 
       for (String word in words) {
           if (numberWords.containsKey(word)) {
               currentResult += numberWords[word]!;
+              foundWord = true;
           } else if (word == 'hundred') {
               currentResult *= 100;
+              foundWord = true;
           } else if (word == 'thousand') {
               finalResult += currentResult * 1000;
               currentResult = 0;
+              foundWord = true;
           }
       }
       finalResult += currentResult;
 
-      if (finalResult != 0 || textLower == 'zero') {
-          return finalResult.toString();
+      if (foundWord || textLower == 'zero') {
+          return finalResult % 1 == 0 ? finalResult.toInt().toString() : finalResult.toString();
       }
 
-      // If parsing fails, return original text
       return text;
   }
 
   void _handleNoInput() async {
     _log('_handleNoInput() triggered');
     await speech.stop();
-    // A short, non-blocking delay to ensure the audio focus is released.
     await Future.delayed(const Duration(milliseconds: 200));
 
     _inputAttempts++;
@@ -277,7 +362,7 @@ class _VoiceHomeState extends State<VoiceHome> {
     if (_inputAttempts < 3) {
       _log('Retrying question due to no input.');
       await tts.speak("I did not catch that. Please try again.");
-      await Future.delayed(const Duration(seconds: 5));
+      await Future.delayed(const Duration(seconds: 4));
       _askQuestion();
     } else {
       _log('Max retry attempts reached. Closing survey.');
@@ -298,18 +383,34 @@ class _VoiceHomeState extends State<VoiceHome> {
     await tts.speak("Thank you for completing the survey. The app will now close.");
     await saveSurveyResults();
     await Future.delayed(const Duration(seconds: 4));
-    await Future.delayed(const Duration(seconds: 4));
     _log('Exiting app.');
     SystemNavigator.pop();
   }
 
   Future<void> saveSurveyResults() async {
-    _log('saveSurveyResults() - Answers: ${jsonEncode(_answers)}');
+    // Create a structured list of responses mapping question text to the answer
+    List<Map<String, String>> surveyOutput = _questions.map((q) {
+      String key = q['key']!;
+      return {
+        'key': key,
+        'question': q['question']!,
+        'answer': _answers[key] ?? ""
+      };
+    }).toList();
+
+    // Add calculated fields to the final JSON
+    surveyOutput.add({
+      'key': 'totalLand',
+      'question': 'Calculated Total Land (Owned + LeasedIn - LeasedOut)',
+      'answer': totalLand
+    });
+
+    _log('saveSurveyResults() - Structured Data: ${jsonEncode(surveyOutput)}');
     try {
       final dir = await getApplicationDocumentsDirectory();
       final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
       final file = File('${dir.path}/survey_$timestamp.json');
-      await file.writeAsString(jsonEncode(_answers));
+      await file.writeAsString(jsonEncode(surveyOutput));
       _log('Survey results saved to ${file.path}');
     } catch (e) {
       _log('Error saving survey results: $e');
@@ -319,7 +420,7 @@ class _VoiceHomeState extends State<VoiceHome> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text("Sample Survey VoiceBot")),
+      appBar: AppBar(title: Text("FarmTalk Survey")),
       body: Padding(
         padding: EdgeInsets.all(20),
         child: Column(
@@ -339,9 +440,9 @@ class _VoiceHomeState extends State<VoiceHome> {
                   label: Text('Start Survey'),
                   backgroundColor: _surveyStarted ? Colors.grey : null,
                 ),
-                ElevatedButton(
+                FloatingActionButton.extended(
                   onPressed: _finishSurvey, // Allow finishing early
-                  child: Text('Finish Survey'),
+                  label: Text('Finish Survey'),
                 ),
               ],
             ),

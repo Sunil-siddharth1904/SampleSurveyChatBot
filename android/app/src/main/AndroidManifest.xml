@@ -13,9 +13,9 @@
         <package android:name="com.google.android.googlequicksearchbox" />
     </queries>
     <application
-        android:label="voicebased_chatbot"
+        android:label="FarmTalk"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/launcher_icon">
         <activity
             android:name=".MainActivity"
             android:exported="true"

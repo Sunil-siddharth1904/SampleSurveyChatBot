@@ -47,7 +47,7 @@ dev_dependencies:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
-  image_path: "assets/icon/app_logo.png" # Path to your logo file
+  image_path: "assets/icon/hero-farm-app.png" # Path to your logo file
   min_sdk_android: 21
   min_sdk_ios: 12
 
